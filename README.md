@@ -131,6 +131,32 @@ Keep Core Data as the authoritative store and mirror via an append-only outbox t
 - It avoids turning a simple MCP server into a hard dependency on a database daemon.
 - It still leaves room for SQL joins and filtered ANN search once recall quality or corpus size makes them worthwhile.
 
+## Claude Code skills pack
+
+For clean `/now`, `/remember`, `/recall`, `/recall_around`, `/list_recent`,
+`/parse_date`, and `/forget` slash commands in Claude Code, install the
+companion skills pack:
+
+```sh
+scripts/install_skills.sh             # symlink skills into ~/.claude/skills/
+scripts/install_skills.sh --dry-run   # preview
+scripts/install_skills.sh --uninstall # remove only the symlinks we own
+```
+
+The installer is idempotent and refuses to overwrite a non-symlink at the
+destination, so any hand-rolled skill at the same path is left untouched.
+
+Each skill is a thin wrapper that calls the matching MCP tool — no memory
+logic is reimplemented in the skill layer. See
+[`claude-mind-skills/README.md`](claude-mind-skills/README.md) for the full
+tool ↔ skill table and the response contract for `recall` / `recall_around`.
+
+You still need to register the MCP server with Claude Code separately:
+
+```sh
+claude mcp add claude-mind -- /absolute/path/to/.build/release/claude-mind-mcp
+```
+
 ## Build & smoke-test
 
 ```sh
