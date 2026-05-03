@@ -1,0 +1,7 @@
+# Use Git LFS for the Core ML model artifact when distributing through git.
+# (`.gitignore` excludes them from a normal git tree by default; opt in with
+# `git lfs track` if you switch to LFS-backed distribution.)
+*.mlpackage filter=lfs diff=lfs merge=lfs -text
+*.mlmodel   filter=lfs diff=lfs merge=lfs -text
+*.mlmodelc  filter=lfs diff=lfs merge=lfs -text
+weight.bin  filter=lfs diff=lfs merge=lfs -text

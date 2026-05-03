@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "claude-mind-mcp": {
+      "command": "/Users/you/Library/Application Support/claude-mind/claude-mind-mcp",
+      "args": [],
+      "env": {
+        "CLAUDE_MIND_STORE_URL": "/Users/you/Library/Application Support/claude-mind/memory.sqlite",
+        "CLAUDE_MIND_ENABLE_PGVECTOR_MIRROR": "false",
+        "CLAUDE_MIND_PG_DSN": "postgresql://localhost/claude_mind"
+      }
+    }
+  }
+}

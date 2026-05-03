@@ -1,0 +1,45 @@
+# Build artifacts
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+
+# Python venv (used for model conversion)
+.venv/
+
+# Local memory store (never commit)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Bench outputs (regenerated locally)
+docs/bench/*.json
+
+# Model artifacts — too big and binary; install via scripts/install_model.sh
+# or distribute through Git LFS / GitHub release assets.
+docs/bench/models/*.mlpackage/
+docs/bench/models/*-tokenizer/
+
+# Standalone bug-repro subprojects live in their own public repos:
+#   https://github.com/aurascoper/coredata-relationship-fault-repro
+#   https://github.com/aurascoper/postgres-nio-tokenizers-release-crash
+# Keep them out of this repo to avoid duplication.
+docs/coredata-bug-repro/
+docs/swift-bug-repro/
+
+# Private/personal corpora — exclude from public publish. The harness/scripts
+# stay; users bring their own data.
+docs/quality/real-trading/memories.jsonl
+docs/quality/real-trading/queries.jsonl
+docs/quality/real-trading/queries.template.jsonl
+docs/quality/real-trading/entities.json
+docs/quality/real-trading/auto_grade.py
+docs/quality/real-trading/README.md
+docs/quality/real-trading/results/
+docs/quality/real-trading/results-*/
+docs/quality/jobs-prose/
+docs/quality/results/
+
+# macOS noise
+.DS_Store
