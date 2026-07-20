@@ -124,10 +124,19 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
 
     // MARK: per-branch executors
 
+    /// The 4 spatial binds ($7 x, $8 y, $9 z, $10 radius) for the seed queries'
+    /// bounding-box pre-filter. Engages only for a full 3D center; otherwise all
+    /// nil, so each query's `$7 IS NULL` guard makes the predicate a no-op and the
+    /// exact Swift post-filter (MemoryHandlers.recall) does the spatial work.
+    private static func spatialBinds(_ filters: RecallFilters) -> (Double?, Double?, Double?, Double?) {
+        guard let s = filters.spatial, s.center.count >= 3 else { return (nil, nil, nil, nil) }
+        return (s.center[0], s.center[1], s.center[2], s.radius)
+    }
+
     private func vectorBranch(queryEmbedding: [Float], filters: RecallFilters, k: Int) async throws -> [RecallSeed] {
         guard k > 0 else { return [] }
         let sql = SchemaGenerator.recallVectorQuery(descriptor)
-        var b = PostgresBindings(capacity: 6)
+        var b = PostgresBindings(capacity: 10)
         do {
             try b.append(vectorString(queryEmbedding))
             try b.append(filters.from)
@@ -135,6 +144,8 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
             try b.append(filters.source)
             try b.append(filters.conversationID)
             try b.append(max(1, k))
+            let (cx, cy, cz, r) = Self.spatialBinds(filters)
+            try b.append(cx); try b.append(cy); try b.append(cz); try b.append(r)
         } catch { throw RecallError.sqlError("bind/vec: \(error)") }
         return try await runRowsAsSeeds(PostgresQuery(unsafeSQL: sql, binds: b))
     }
@@ -157,7 +168,7 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
         guard !tokens.isEmpty else { return [] }
         let tsQuery = tokens.joined(separator: " OR ")
         let sql = SchemaGenerator.recallLexicalQuery
-        var b = PostgresBindings(capacity: 6)
+        var b = PostgresBindings(capacity: 10)
         do {
             try b.append(tsQuery)
             try b.append(filters.from)
@@ -165,6 +176,8 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
             try b.append(filters.source)
             try b.append(filters.conversationID)
             try b.append(max(1, k))
+            let (cx, cy, cz, r) = Self.spatialBinds(filters)
+            try b.append(cx); try b.append(cy); try b.append(cz); try b.append(r)
         } catch { throw RecallError.sqlError("bind/lex: \(error)") }
         return try await runRowsAsSeeds(PostgresQuery(unsafeSQL: sql, binds: b))
     }
@@ -173,7 +186,7 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
         guard k > 0, !entityNames.isEmpty else { return [] }
         let normalized = entityNames.map { $0.lowercased() }
         let sql = SchemaGenerator.recallEntityMentionQuery
-        var b = PostgresBindings(capacity: 6)
+        var b = PostgresBindings(capacity: 10)
         do {
             try b.append(normalized)
             try b.append(filters.from)
@@ -181,6 +194,8 @@ public final class RecallService: Service, RecallSeeder, @unchecked Sendable {
             try b.append(filters.source)
             try b.append(filters.conversationID)
             try b.append(max(1, k))
+            let (cx, cy, cz, r) = Self.spatialBinds(filters)
+            try b.append(cx); try b.append(cy); try b.append(cz); try b.append(r)
         } catch { throw RecallError.sqlError("bind/ent: \(error)") }
         return try await runRowsAsSeeds(PostgresQuery(unsafeSQL: sql, binds: b))
     }

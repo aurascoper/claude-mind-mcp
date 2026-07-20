@@ -8,6 +8,7 @@
 -- dimension up front.
 
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS cube;
 
 CREATE TABLE IF NOT EXISTS memories (
     id UUID PRIMARY KEY,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS memories (
     language TEXT,
     sentiment DOUBLE PRECISION,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata_coord cube,
     search_document TSVECTOR,
     tombstoned BOOLEAN NOT NULL DEFAULT FALSE
 );
@@ -42,6 +44,31 @@ DROP TRIGGER IF EXISTS memories_search_document_update ON memories;
 CREATE TRIGGER memories_search_document_update
     BEFORE INSERT OR UPDATE OF text, source, conversation_id ON memories
     FOR EACH ROW EXECUTE FUNCTION memories_search_document_trigger();
+
+-- Continuous-coordinate spatial recall: metadata_coord mirrors the metadata
+-- x/y/z as a cube point (trigger-derived), GiST-indexed for near/radius.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata_coord cube;
+CREATE OR REPLACE FUNCTION memories_metadata_coord_trigger() RETURNS trigger AS $$
+BEGIN
+    IF NEW.metadata ? 'x' AND NEW.metadata ? 'y' AND NEW.metadata ? 'z' THEN
+        NEW.metadata_coord := cube(ARRAY[
+            (NEW.metadata->>'x')::float8,
+            (NEW.metadata->>'y')::float8,
+            (NEW.metadata->>'z')::float8
+        ]);
+    ELSE
+        NEW.metadata_coord := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS memories_metadata_coord_update ON memories;
+CREATE TRIGGER memories_metadata_coord_update
+    BEFORE INSERT OR UPDATE OF metadata ON memories
+    FOR EACH ROW EXECUTE FUNCTION memories_metadata_coord_trigger();
+CREATE INDEX IF NOT EXISTS memories_coord_gist ON memories USING gist (metadata_coord);
+UPDATE memories SET metadata = metadata WHERE metadata ? 'x' AND metadata_coord IS NULL;
 
 CREATE TABLE IF NOT EXISTS embedding_profiles (
     id           TEXT PRIMARY KEY,

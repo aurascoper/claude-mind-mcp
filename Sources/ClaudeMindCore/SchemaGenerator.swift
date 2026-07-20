@@ -63,6 +63,9 @@ public enum SchemaGenerator {
     public static var canonicalStatements: [String] {
         var out: [String] = []
         out.append("CREATE EXTENSION IF NOT EXISTS vector")
+        // `cube` backs the continuous-coordinate spatial recall (near/radius over
+        // the metadata x/y/z coordinate), GiST-indexed below.
+        out.append("CREATE EXTENSION IF NOT EXISTS cube")
         out.append("""
         CREATE TABLE IF NOT EXISTS memories (
             id UUID PRIMARY KEY,
@@ -74,6 +77,7 @@ public enum SchemaGenerator {
             language TEXT,
             sentiment DOUBLE PRECISION,
             metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            metadata_coord cube,
             search_document TSVECTOR,
             tombstoned BOOLEAN NOT NULL DEFAULT FALSE
         )
@@ -100,6 +104,39 @@ public enum SchemaGenerator {
             BEFORE INSERT OR UPDATE OF text, source, conversation_id ON memories
             FOR EACH ROW EXECUTE FUNCTION memories_search_document_trigger()
         """)
+        // ── Continuous-coordinate spatial recall (near/radius) ──────────────
+        // metadata_coord mirrors the metadata x/y/z coordinate as a `cube` point,
+        // derived by a trigger (single source of truth = the metadata JSONB) and
+        // GiST-indexed so the seed queries' bounding-box filter is index-accelerated.
+        // ALTER handles pre-existing mirrors (CREATE TABLE IF NOT EXISTS skips them).
+        out.append("ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata_coord cube")
+        out.append("""
+        CREATE OR REPLACE FUNCTION memories_metadata_coord_trigger() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.metadata ? 'x' AND NEW.metadata ? 'y' AND NEW.metadata ? 'z' THEN
+                NEW.metadata_coord := cube(ARRAY[
+                    (NEW.metadata->>'x')::float8,
+                    (NEW.metadata->>'y')::float8,
+                    (NEW.metadata->>'z')::float8
+                ]);
+            ELSE
+                NEW.metadata_coord := NULL;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """)
+        out.append("DROP TRIGGER IF EXISTS memories_metadata_coord_update ON memories")
+        out.append("""
+        CREATE TRIGGER memories_metadata_coord_update
+            BEFORE INSERT OR UPDATE OF metadata ON memories
+            FOR EACH ROW EXECUTE FUNCTION memories_metadata_coord_trigger()
+        """)
+        out.append("CREATE INDEX IF NOT EXISTS memories_coord_gist ON memories USING gist (metadata_coord)")
+        // One-time backfill for rows written before the column existed: re-fire the
+        // trigger without changing the JSONB. Idempotent — matches ~0 rows once
+        // every coordinate-bearing row has its cube.
+        out.append("UPDATE memories SET metadata = metadata WHERE metadata ? 'x' AND metadata_coord IS NULL")
         out.append("""
         CREATE TABLE IF NOT EXISTS embedding_profiles (
             id           TEXT PRIMARY KEY,
@@ -196,6 +233,7 @@ public enum SchemaGenerator {
     /// Canonical schema as a single string (kept for sql/pgvector_schema.sql parity).
     public static let canonicalDDL: String = #"""
     CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS cube;
 
     CREATE TABLE IF NOT EXISTS memories (
         id UUID PRIMARY KEY,
@@ -207,6 +245,7 @@ public enum SchemaGenerator {
         language TEXT,
         sentiment DOUBLE PRECISION,
         metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        metadata_coord cube,
         search_document TSVECTOR,
         tombstoned BOOLEAN NOT NULL DEFAULT FALSE
     );
@@ -230,6 +269,31 @@ public enum SchemaGenerator {
     CREATE TRIGGER memories_search_document_update
         BEFORE INSERT OR UPDATE OF text, source, conversation_id ON memories
         FOR EACH ROW EXECUTE FUNCTION memories_search_document_trigger();
+
+    -- Continuous-coordinate spatial recall: metadata_coord mirrors the metadata
+    -- x/y/z as a cube point (trigger-derived), GiST-indexed for near/radius.
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata_coord cube;
+    CREATE OR REPLACE FUNCTION memories_metadata_coord_trigger() RETURNS trigger AS $$
+    BEGIN
+        IF NEW.metadata ? 'x' AND NEW.metadata ? 'y' AND NEW.metadata ? 'z' THEN
+            NEW.metadata_coord := cube(ARRAY[
+                (NEW.metadata->>'x')::float8,
+                (NEW.metadata->>'y')::float8,
+                (NEW.metadata->>'z')::float8
+            ]);
+        ELSE
+            NEW.metadata_coord := NULL;
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS memories_metadata_coord_update ON memories;
+    CREATE TRIGGER memories_metadata_coord_update
+        BEFORE INSERT OR UPDATE OF metadata ON memories
+        FOR EACH ROW EXECUTE FUNCTION memories_metadata_coord_trigger();
+    CREATE INDEX IF NOT EXISTS memories_coord_gist ON memories USING gist (metadata_coord);
+    UPDATE memories SET metadata = metadata WHERE metadata ? 'x' AND metadata_coord IS NULL;
 
     CREATE TABLE IF NOT EXISTS embedding_profiles (
         id           TEXT PRIMARY KEY,
@@ -314,12 +378,14 @@ public enum SchemaGenerator {
     // its own score. Dedupe + rerank happens in the caller.
     //
     // Common bind plan (for vector + lexical + entity-mention):
-    //   $1 from   timestamptz?
-    //   $2 to     timestamptz?
-    //   $3 source text?
-    //   $4 conv   text?
-    //   $5 limit  int
-    // Plus the branch-specific lead bind (see below).
+    //   $1 branch-specific lead (query vector text / tsquery / entity name[])
+    //   $2 from   timestamptz?
+    //   $3 to     timestamptz?
+    //   $4 source text?
+    //   $5 conv   text?
+    //   $6 limit  int
+    //   $7/$8/$9  spatial center x/y/z float8? (nil ⇒ predicate no-op), $10 radius float8?
+    //             — the bounding-box near/radius pre-filter over metadata_coord.
 
     /// Vector branch. Binds: $0 = query vector as text (cast `::vector`).
     /// Final placeholders: $1 vec, $2 from, $3 to, $4 source, $5 conv, $6 limit.
@@ -337,6 +403,11 @@ public enum SchemaGenerator {
            AND ($3::timestamptz IS NULL OR m.occurred_at <= $3 OR (m.occurred_at IS NULL AND m.created_at <= $3))
            AND ($4::text       IS NULL OR m.source = $4)
            AND ($5::text       IS NULL OR m.conversation_id = $5)
+           AND CASE WHEN $7::float8 IS NULL THEN TRUE
+                    ELSE m.metadata_coord IS NOT NULL
+                         AND m.metadata_coord <@ cube(ARRAY[$7-$10,$8-$10,$9-$10]::float8[],
+                                                      ARRAY[$7+$10,$8+$10,$9+$10]::float8[])
+               END
          ORDER BY e.embedding <=> $1::vector
          LIMIT $6;
         """
@@ -344,7 +415,8 @@ public enum SchemaGenerator {
 
     /// Lexical branch. Hits the GIN index on `search_document` via
     /// `websearch_to_tsquery`. Skips when the query yields no terms.
-    /// Binds: $1 ts_query string, $2 from, $3 to, $4 source, $5 conv, $6 limit.
+    /// Binds: $1 ts_query string, $2 from, $3 to, $4 source, $5 conv, $6 limit,
+    /// $7/$8/$9 spatial center x/y/z (nullable), $10 radius.
     public static let recallLexicalQuery: String = """
     SELECT m.id, m.text, m.created_at, m.occurred_at, m.source,
            m.conversation_id, m.language, m.sentiment,
@@ -357,6 +429,11 @@ public enum SchemaGenerator {
        AND ($3::timestamptz IS NULL OR m.occurred_at <= $3 OR (m.occurred_at IS NULL AND m.created_at <= $3))
        AND ($4::text       IS NULL OR m.source = $4)
        AND ($5::text       IS NULL OR m.conversation_id = $5)
+       AND CASE WHEN $7::float8 IS NULL THEN TRUE
+                ELSE m.metadata_coord IS NOT NULL
+                     AND m.metadata_coord <@ cube(ARRAY[$7-$10,$8-$10,$9-$10]::float8[],
+                                                  ARRAY[$7+$10,$8+$10,$9+$10]::float8[])
+           END
      ORDER BY lexical_score DESC
      LIMIT $6;
     """
@@ -364,7 +441,8 @@ public enum SchemaGenerator {
     /// Entity-mention branch. Surfaces memories that mention any entity in the
     /// query's NER set, regardless of vector/lexical rank. This is the main
     /// v2.5 fix for entity-name miss queries.
-    /// Binds: $1 entity-name array text[], $2 from, $3 to, $4 source, $5 conv, $6 limit.
+    /// Binds: $1 entity-name array text[], $2 from, $3 to, $4 source, $5 conv, $6 limit,
+    /// $7/$8/$9 spatial center x/y/z (nullable), $10 radius.
     public static let recallEntityMentionQuery: String = """
     SELECT DISTINCT ON (m.id)
            m.id, m.text, m.created_at, m.occurred_at, m.source,
@@ -380,6 +458,11 @@ public enum SchemaGenerator {
        AND ($3::timestamptz IS NULL OR m.occurred_at <= $3 OR (m.occurred_at IS NULL AND m.created_at <= $3))
        AND ($4::text       IS NULL OR m.source = $4)
        AND ($5::text       IS NULL OR m.conversation_id = $5)
+       AND CASE WHEN $7::float8 IS NULL THEN TRUE
+                ELSE m.metadata_coord IS NOT NULL
+                     AND m.metadata_coord <@ cube(ARRAY[$7-$10,$8-$10,$9-$10]::float8[],
+                                                  ARRAY[$7+$10,$8+$10,$9+$10]::float8[])
+           END
      ORDER BY m.id, m.created_at DESC
      LIMIT $6;
     """

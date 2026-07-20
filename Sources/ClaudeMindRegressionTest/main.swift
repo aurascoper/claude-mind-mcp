@@ -28,8 +28,26 @@ struct Regression {
     static func main() async throws {
         try await mentionRoundTrip()
         try await metadataSpatialRoundTrip()
+        schemaSpatialSqlPresent()
         FileHandle.standardError.write(Data("\nregression: \(tally.passed) passed, \(tally.failed) failed\n".utf8))
         if tally.failed > 0 { exit(1) }
+    }
+
+    /// The seed-level spatial pre-filter is exercised only against a live Postgres
+    /// mirror (none here), so pin the EMITTED SQL instead: the schema carries the
+    /// cube extension / column / GiST index / trigger, and every recall seed query
+    /// carries the bounding-box predicate. Catches SQL-generation regressions.
+    static func schemaSpatialSqlPresent() {
+        let stmts = SchemaGenerator.canonicalStatements.joined(separator: "\n")
+        require(stmts.contains("CREATE EXTENSION IF NOT EXISTS cube"), "canonicalStatements missing cube extension")
+        require(stmts.contains("metadata_coord cube"), "canonicalStatements missing metadata_coord column")
+        require(stmts.contains("ADD COLUMN IF NOT EXISTS metadata_coord cube"), "canonicalStatements missing ALTER for existing mirrors")
+        require(stmts.contains("USING gist (metadata_coord)"), "canonicalStatements missing GiST index")
+        require(stmts.contains("memories_metadata_coord_trigger"), "canonicalStatements missing coord trigger")
+        require(SchemaGenerator.canonicalDDL.contains("CREATE EXTENSION IF NOT EXISTS cube"), "canonicalDDL missing cube extension")
+        require(SchemaGenerator.canonicalDDL.contains("metadata_coord cube"), "canonicalDDL missing metadata_coord column")
+        require(SchemaGenerator.recallLexicalQuery.contains("m.metadata_coord <@ cube("), "lexical query missing spatial predicate")
+        require(SchemaGenerator.recallEntityMentionQuery.contains("m.metadata_coord <@ cube("), "entity query missing spatial predicate")
     }
 
     /// Continuous-coordinate metadata (the Stage-4 upgrade of categorical
