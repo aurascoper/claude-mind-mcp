@@ -349,6 +349,7 @@ public enum MemoryHandlers {
         if let source = h.source { d["source"] = source }
         if let conv = h.conversationID { d["conversation_id"] = conv }
         if let lang = h.language { d["language"] = lang }
+        if let metadata = h.metadata, !metadata.isEmpty { d["metadata"] = metadata }
         return d
     }
 
