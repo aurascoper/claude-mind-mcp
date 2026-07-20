@@ -175,6 +175,16 @@ public enum MemoryHandlers {
                 var scored: [Scored] = []
                 for ex in expanded {
                     let m = ex.memory
+                    // Spatial parity with the local path: drop out-of-radius /
+                    // coordinate-less memories when a near/radius filter is set.
+                    // Post-filter over the expanded set (metadata comes from Core
+                    // Data via expandGraph); a seed-level SQL pre-filter is a
+                    // further refinement, noted.
+                    if let spatial = filters.spatial,
+                       !MemoryStore.withinRadius(MemoryStore.coordinate(m.metadata),
+                                                 center: spatial.center, radius: spatial.radius) {
+                        continue
+                    }
                     let sem: Float
                     let lex: Float
                     if let pg = pgScores[m.id] {
@@ -204,7 +214,8 @@ public enum MemoryHandlers {
                         semanticScore: sem,
                         recencyScore: rec,
                         combinedScore: combined,
-                        tags: m.tags
+                        tags: m.tags,
+                        metadata: m.metadata
                     )
                     scored.append(.init(hit: hit, combined: combined, isSeed: ex.isSeed, sharedEntityCount: ex.sharedEntityCount))
                 }

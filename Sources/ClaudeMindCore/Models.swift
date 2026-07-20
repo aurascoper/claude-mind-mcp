@@ -189,6 +189,20 @@ public struct MemoryFull: Sendable, Codable {
     public let tombstoned: Bool
     public let tags: [String]
     public let mentions: [MentionInfo]
+    /// Continuous numeric metadata (e.g. the `x`/`y`/`z` coordinate). Read from
+    /// the `metadataJSON` column; the Postgres mirror serializes it into the
+    /// `metadata` JSONB column instead of the old hardcoded `{}`.
+    public let metadata: [String: Double]?
+    public init(id: UUID, text: String, createdAt: Date, occurredAt: Date?, source: String?,
+                conversationID: String?, language: String?, sentiment: Double?, embedding: [Float],
+                embeddingBackend: String?, embeddingProfile: String?, embeddingDim: Int,
+                tombstoned: Bool, tags: [String], mentions: [MentionInfo], metadata: [String: Double]? = nil) {
+        self.id = id; self.text = text; self.createdAt = createdAt; self.occurredAt = occurredAt
+        self.source = source; self.conversationID = conversationID; self.language = language
+        self.sentiment = sentiment; self.embedding = embedding; self.embeddingBackend = embeddingBackend
+        self.embeddingProfile = embeddingProfile; self.embeddingDim = embeddingDim
+        self.tombstoned = tombstoned; self.tags = tags; self.mentions = mentions; self.metadata = metadata
+    }
 }
 
 public struct RememberResult: Sendable, Codable {

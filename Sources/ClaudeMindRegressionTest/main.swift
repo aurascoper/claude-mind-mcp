@@ -54,7 +54,7 @@ struct Regression {
                                           metadata: ["x": 0, "y": 0, "z": 0]), signal: signal)
         let b = try await store.remember(draft: MemoryDraft(text: "node B", tags: ["node:1"],
                                           metadata: ["x": 1, "y": 0, "z": 0]), signal: signal)
-        _ = try await store.remember(draft: MemoryDraft(text: "node C no coord"), signal: signal)
+        let c = try await store.remember(draft: MemoryDraft(text: "node C no coord"), signal: signal)
 
         // No spatial filter: all three, and metadata round-trips (nil for C).
         let all = try await store.recall(queryEmbedding: nil, filters: RecallFilters(), k: 10,
@@ -79,6 +79,16 @@ struct Regression {
                     k: 10, weightSemantic: 0, weightRecency: 1)
         require(Set(wide.map { $0.id }) == [a.id, b.id],
                 "spatial recall near origin (r=1.5) should return A and B only, got \(wide.map { $0.text })")
+
+        // Write-path (Postgres v2): loadMemoryFull surfaces metadata — the exact
+        // value MirrorWorker serializes into the Postgres `metadata` JSONB (was
+        // hardcoded "{}"). Can't test the mirror INSERT without a live Postgres,
+        // but this covers its testable input.
+        let full = try await store.loadMemoryFull(id: a.id)   // A was stored at [0,0,0]
+        require(full?.metadata?["x"] == 0 && full?.metadata?["y"] == 0 && full?.metadata?["z"] == 0,
+                "loadMemoryFull metadata did not round-trip: \(String(describing: full?.metadata))")
+        let fullC = try await store.loadMemoryFull(id: c.id)
+        require(fullC?.metadata == nil, "coordinate-less memory should have nil metadata, got \(String(describing: fullC?.metadata))")
     }
 
     /// Catches regressions on the entity-FK workaround (Core Data

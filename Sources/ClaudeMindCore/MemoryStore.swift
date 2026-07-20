@@ -413,7 +413,8 @@ public final class MemoryStore: @unchecked Sendable {
                     embeddingDim: Int((row.value(forKey: "embeddingDim") as? Int32) ?? 0),
                     tombstoned: (row.value(forKey: "tombstoned") as? Bool) ?? false,
                     tags: tagNames,
-                    mentions: []  // expandGraph doesn't need mentions; mirror loadMemoryFull does
+                    mentions: [],  // expandGraph doesn't need mentions; mirror loadMemoryFull does
+                    metadata: Self.decodeMetadata(row.value(forKey: "metadataJSON") as? Data)
                 )
                 out.append(ExpandedHit(
                     memory: mem,
@@ -599,7 +600,8 @@ public final class MemoryStore: @unchecked Sendable {
                 embeddingDim: Int((row.value(forKey: "embeddingDim") as? Int32) ?? 0),
                 tombstoned: (row.value(forKey: "tombstoned") as? Bool) ?? false,
                 tags: tagNames,
-                mentions: mentions
+                mentions: mentions,
+                metadata: Self.decodeMetadata(row.value(forKey: "metadataJSON") as? Data)
             )
         }
     }
