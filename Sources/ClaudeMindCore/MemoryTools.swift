@@ -7,9 +7,12 @@ public struct RememberArgs: Sendable {
     public let conversationID: String?
     public let occurredAt: Date?
     public let tags: [String]
-    public init(text: String, source: String? = nil, conversationID: String? = nil, occurredAt: Date? = nil, tags: [String] = []) {
+    /// Optional continuous numeric metadata (e.g. a 3D-workspace coordinate
+    /// under keys `x`/`y`/`z`), stored as JSON in `metadataJSON`.
+    public let metadata: [String: Double]?
+    public init(text: String, source: String? = nil, conversationID: String? = nil, occurredAt: Date? = nil, tags: [String] = [], metadata: [String: Double]? = nil) {
         self.text = text; self.source = source; self.conversationID = conversationID
-        self.occurredAt = occurredAt; self.tags = tags
+        self.occurredAt = occurredAt; self.tags = tags; self.metadata = metadata
     }
 }
 
@@ -21,9 +24,16 @@ public struct RecallArgs: Sendable {
     public let conversationID: String?
     public let tags: [String]
     public let k: Int
-    public init(query: String, from: Date? = nil, to: Date? = nil, source: String? = nil, conversationID: String? = nil, tags: [String] = [], k: Int = 10) {
+    /// Optional spatial range filter: a coordinate `[x, y, z]` (as many dims as
+    /// supplied) to search near. Combined with `radius` into a `SpatialFilter`.
+    public let near: [Double]?
+    /// Radius for the `near` filter (default 0.05 — the workspace shell places
+    /// concept nodes on radii ~0.06–0.085, so this is a tight neighborhood).
+    public let radius: Double?
+    public init(query: String, from: Date? = nil, to: Date? = nil, source: String? = nil, conversationID: String? = nil, tags: [String] = [], k: Int = 10, near: [Double]? = nil, radius: Double? = nil) {
         self.query = query; self.from = from; self.to = to; self.source = source
         self.conversationID = conversationID; self.tags = tags; self.k = k
+        self.near = near; self.radius = radius
     }
 }
 
@@ -38,7 +48,8 @@ public enum MemoryHandlers {
                 source: args.source,
                 conversationID: args.conversationID,
                 occurredAt: args.occurredAt,
-                tags: args.tags
+                tags: args.tags,
+                metadata: args.metadata
             )
             let result = try await store.remember(draft: draft, signal: signal)
             logger.info("remember: stored id=\(result.id)")
@@ -105,12 +116,14 @@ public enum MemoryHandlers {
                 ? QueryEntityFallback.candidates(from: args.query)
                 : []
             let queryEntities = nerEntities + fallbackEntities
+            let spatial = args.near.map { SpatialFilter(center: $0, radius: args.radius ?? 0.05) }
             let filters = RecallFilters(
                 from: args.from,
                 to: args.to,
                 source: args.source,
                 conversationID: args.conversationID,
-                tags: args.tags
+                tags: args.tags,
+                spatial: spatial
             )
             let k = max(1, args.k)
 

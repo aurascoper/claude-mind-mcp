@@ -72,6 +72,12 @@ public final class MemoryStore: @unchecked Sendable {
             memory.setValue(signal.profile, forKey: "embeddingProfile")
             memory.setValue(Int32(signal.dimension), forKey: "embeddingDim")
             memory.setValue(false, forKey: "tombstoned")
+            // Continuous numeric metadata (e.g. the 3D-workspace coordinate) →
+            // the previously-dormant metadataJSON column. Stored as JSON so
+            // `recall`'s near/radius filter can range-query it.
+            if let data = Self.encodeMetadata(draft.metadata) {
+                memory.setValue(data, forKey: "metadataJSON")
+            }
 
             // Mentions + entities (entity dedup by canonicalName + type)
             for det in signal.entities {
@@ -140,6 +146,46 @@ public final class MemoryStore: @unchecked Sendable {
         return obj
     }
 
+    // MARK: metadata (continuous-coordinate) helpers
+
+    /// JSON-encode a `[String: Double]` metadata map for the `metadataJSON`
+    /// column. Returns nil for nil/empty so the column stays unset.
+    static func encodeMetadata(_ m: [String: Double]?) -> Data? {
+        guard let m, !m.isEmpty else { return nil }
+        return try? JSONSerialization.data(withJSONObject: m, options: [.sortedKeys])
+    }
+
+    /// Decode the `metadataJSON` blob back to `[String: Double]` (numeric values
+    /// only). Returns nil when absent, unparseable, or empty.
+    static func decodeMetadata(_ data: Data?) -> [String: Double]? {
+        guard let data,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        var out: [String: Double] = [:]
+        for (k, v) in obj {
+            if let d = (v as? NSNumber)?.doubleValue { out[k] = d }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// The spatial coordinate embedded in a metadata map — values at keys
+    /// `x`/`y`/`z`, in order, as many as present. nil when none of them exist.
+    static func coordinate(_ m: [String: Double]?) -> [Double]? {
+        guard let m else { return nil }
+        let coord = ["x", "y", "z"].compactMap { m[$0] }
+        return coord.isEmpty ? nil : coord
+    }
+
+    /// Euclidean-within-radius over the dims both `coord` and `center` share.
+    /// A nil/empty coordinate is never within radius (excluded by spatial filter).
+    static func withinRadius(_ coord: [Double]?, center: [Double], radius: Double) -> Bool {
+        guard let coord, !coord.isEmpty, !center.isEmpty else { return false }
+        let n = min(coord.count, center.count)
+        var sq = 0.0
+        for i in 0..<n { let d = coord[i] - center[i]; sq += d * d }
+        return sq <= radius * radius
+    }
+
     // MARK: recall
 
     public func recall(
@@ -200,6 +246,14 @@ public final class MemoryStore: @unchecked Sendable {
                 let language = row.value(forKey: "language") as? String
                 let blob = row.value(forKey: "embeddingBlob") as? Data
                 let stored = blob.map(EmbeddingCodec.decode) ?? []
+                let metadata = Self.decodeMetadata(row.value(forKey: "metadataJSON") as? Data)
+
+                // Spatial range filter: drop rows outside the radius (or with no
+                // coordinate) when a `near`/`radius` filter is active.
+                if let spatial = filters.spatial,
+                   !Self.withinRadius(Self.coordinate(metadata), center: spatial.center, radius: spatial.radius) {
+                    continue
+                }
 
                 let sem: Float
                 if let q = queryEmbedding, !q.isEmpty, !stored.isEmpty, q.count == stored.count {
@@ -232,7 +286,8 @@ public final class MemoryStore: @unchecked Sendable {
                     semanticScore: sem,
                     recencyScore: rec,
                     combinedScore: combined,
-                    tags: tagNames
+                    tags: tagNames,
+                    metadata: metadata
                 )
                 scored.append(.init(hit: hit, combined: combined))
             }

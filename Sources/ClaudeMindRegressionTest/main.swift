@@ -27,8 +27,58 @@ func require(_ condition: Bool, _ message: @autoclosure () -> String, file: Stat
 struct Regression {
     static func main() async throws {
         try await mentionRoundTrip()
+        try await metadataSpatialRoundTrip()
         FileHandle.standardError.write(Data("\nregression: \(tally.passed) passed, \(tally.failed) failed\n".utf8))
         if tally.failed > 0 { exit(1) }
+    }
+
+    /// Continuous-coordinate metadata (the Stage-4 upgrade of categorical
+    /// `node:<id>` tags): metadata round-trips through the `metadataJSON` column,
+    /// and a `near`/`radius` spatial filter keeps only in-radius coordinates
+    /// while excluding far ones AND coordinate-less memories.
+    static func metadataSpatialRoundTrip() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmm-spatial-\(UUID().uuidString).sqlite")
+        defer {
+            try? FileManager.default.removeItem(at: tmp)
+            try? FileManager.default.removeItem(at: tmp.appendingPathExtension("shm"))
+            try? FileManager.default.removeItem(at: tmp.appendingPathExtension("wal"))
+        }
+        let settings = Settings(storeURL: tmp, embeddingBackend: "test", embeddingProfile: "test",
+                                coreMLUnits: "all", mirrorEnabled: false, pgDSN: nil)
+        let store = try MemoryStore(settings: settings, logger: Logger(label: "cmm-regression"))
+        let signal = EnrichedSignal(language: "en", sentiment: 0, entities: [], embedding: nil,
+                                    backend: "test", profile: "test", dimension: 0)
+
+        let a = try await store.remember(draft: MemoryDraft(text: "node A", tags: ["node:0"],
+                                          metadata: ["x": 0, "y": 0, "z": 0]), signal: signal)
+        let b = try await store.remember(draft: MemoryDraft(text: "node B", tags: ["node:1"],
+                                          metadata: ["x": 1, "y": 0, "z": 0]), signal: signal)
+        _ = try await store.remember(draft: MemoryDraft(text: "node C no coord"), signal: signal)
+
+        // No spatial filter: all three, and metadata round-trips (nil for C).
+        let all = try await store.recall(queryEmbedding: nil, filters: RecallFilters(), k: 10,
+                                         weightSemantic: 0, weightRecency: 1)
+        require(all.count == 3, "expected 3 memories, got \(all.count)")
+        let hitA = all.first { $0.id == a.id }
+        require(hitA?.metadata?["x"] == 0 && hitA?.metadata?["y"] == 0,
+                "metadata did not round-trip for A: \(String(describing: hitA?.metadata))")
+        require(all.first { $0.text == "node C no coord" }?.metadata == nil,
+                "expected nil metadata for coordinate-less C")
+
+        // Tight radius near A: only A (B is 1.0 away; C has no coordinate).
+        let near = try await store.recall(queryEmbedding: nil,
+                    filters: RecallFilters(spatial: SpatialFilter(center: [0, 0, 0], radius: 0.1)),
+                    k: 10, weightSemantic: 0, weightRecency: 1)
+        require(near.count == 1 && near.first?.id == a.id,
+                "spatial recall near origin (r=0.1) should return only A, got \(near.map { $0.text })")
+
+        // Wider radius catches B too, still excludes coordinate-less C.
+        let wide = try await store.recall(queryEmbedding: nil,
+                    filters: RecallFilters(spatial: SpatialFilter(center: [0, 0, 0], radius: 1.5)),
+                    k: 10, weightSemantic: 0, weightRecency: 1)
+        require(Set(wide.map { $0.id }) == [a.id, b.id],
+                "spatial recall near origin (r=1.5) should return A and B only, got \(wide.map { $0.text })")
     }
 
     /// Catches regressions on the entity-FK workaround (Core Data

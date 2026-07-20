@@ -53,12 +53,14 @@ struct ClaudeMindMCPApp {
                 return .init(content: [.text(text:DateTimeTool.parseDateJSON(text: text))], isError: false)
 
             case "remember":
+                let meta = doubleDict(args["metadata"])
                 let r = RememberArgs(
                     text: args["text"]?.stringValue ?? "",
                     source: args["source"]?.stringValue,
                     conversationID: args["conversation_id"]?.stringValue,
                     occurredAt: parseISO8601(args["occurred_at"]?.stringValue),
-                    tags: stringArray(args["tags"])
+                    tags: stringArray(args["tags"]),
+                    metadata: meta.isEmpty ? nil : meta
                 )
                 if r.text.isEmpty {
                     return .init(content: [.text(text:"{\"error\": \"text is required\"}")], isError: true)
@@ -67,6 +69,7 @@ struct ClaudeMindMCPApp {
                 return .init(content: [.text(text:json)], isError: false)
 
             case "recall":
+                let nearArr = doubleArray(args["near"])
                 let r = RecallArgs(
                     query: args["query"]?.stringValue ?? "",
                     from: parseISO8601(args["from"]?.stringValue),
@@ -74,7 +77,9 @@ struct ClaudeMindMCPApp {
                     source: args["source"]?.stringValue,
                     conversationID: args["conversation_id"]?.stringValue,
                     tags: stringArray(args["tags"]),
-                    k: args["k"]?.intValue ?? 10
+                    k: args["k"]?.intValue ?? 10,
+                    near: nearArr.isEmpty ? nil : nearArr,
+                    radius: args["radius"]?.doubleValue
                 )
                 if r.query.isEmpty {
                     return .init(content: [.text(text:"{\"error\": \"query is required\"}")], isError: true)
@@ -231,6 +236,23 @@ struct ClaudeMindMCPApp {
         guard case .array(let arr)? = v else { return [] }
         return arr.compactMap { $0.stringValue }
     }
+
+    /// Numeric array (e.g. a `near` coordinate `[x, y, z]`). Ints coerce to Double.
+    static func doubleArray(_ v: Value?) -> [Double] {
+        guard case .array(let arr)? = v else { return [] }
+        return arr.compactMap { $0.doubleValue ?? $0.intValue.map(Double.init) }
+    }
+
+    /// Numeric object (e.g. `metadata` `{"x":.., "y":.., "z":..}`). Non-numeric
+    /// values are dropped.
+    static func doubleDict(_ v: Value?) -> [String: Double] {
+        guard case .object(let obj)? = v else { return [:] }
+        var out: [String: Double] = [:]
+        for (k, val) in obj {
+            if let d = val.doubleValue ?? val.intValue.map(Double.init) { out[k] = d }
+        }
+        return out
+    }
 }
 
 struct MCPService: Service {
@@ -253,6 +275,23 @@ enum ToolCatalog {
         .object([
             "type": .string("array"),
             "items": .object(["type": .string("string")]),
+            "description": .string(desc)
+        ])
+    }
+    private static func arrOfNum(_ desc: String) -> Value {
+        .object([
+            "type": .string("array"),
+            "items": .object(["type": .string("number")]),
+            "description": .string(desc)
+        ])
+    }
+    private static func num(_ desc: String) -> Value {
+        .object(["type": .string("number"), "description": .string(desc)])
+    }
+    private static func objOfNum(_ desc: String) -> Value {
+        .object([
+            "type": .string("object"),
+            "additionalProperties": .object(["type": .string("number")]),
             "description": .string(desc)
         ])
     }
@@ -290,7 +329,8 @@ enum ToolCatalog {
                     "source": str("Source or app name"),
                     "conversation_id": str("Conversation identifier"),
                     "occurred_at": str("Optional ISO8601 datetime"),
-                    "tags": arrOfStr("Tags")
+                    "tags": arrOfStr("Tags"),
+                    "metadata": objOfNum("Optional numeric metadata, e.g. a spatial coordinate {\"x\":.., \"y\":.., \"z\":..}. Recallable via near/radius.")
                 ],
                 required: ["text"]
             )
@@ -306,7 +346,9 @@ enum ToolCatalog {
                     "source": str("Optional source filter"),
                     "conversation_id": str("Optional conversation filter"),
                     "tags": arrOfStr("Tag filter"),
-                    "k": int("Maximum results (default 10)")
+                    "k": int("Maximum results (default 10)"),
+                    "near": arrOfNum("Optional spatial filter: coordinate [x,y,z] to search near (matches a memory's metadata x/y/z)."),
+                    "radius": num("Radius for the near filter (default 0.05).")
                 ],
                 required: ["query"]
             )

@@ -38,9 +38,28 @@ public struct MemoryDraft: Sendable {
     public let conversationID: String?
     public let occurredAt: Date?
     public let tags: [String]
-    public init(text: String, source: String? = nil, conversationID: String? = nil, occurredAt: Date? = nil, tags: [String] = []) {
+    /// Continuous numeric metadata persisted as JSON in the memory's
+    /// `metadataJSON` column. The convention for a spatial address is the keys
+    /// `x`/`y`/`z` (e.g. a 3D-workspace concept-node coordinate), which the
+    /// `near`/`radius` recall filter queries — the continuous-coordinate
+    /// upgrade of a categorical `node:<id>` tag.
+    public let metadata: [String: Double]?
+    public init(text: String, source: String? = nil, conversationID: String? = nil, occurredAt: Date? = nil, tags: [String] = [], metadata: [String: Double]? = nil) {
         self.text = text; self.source = source; self.conversationID = conversationID
-        self.occurredAt = occurredAt; self.tags = tags
+        self.occurredAt = occurredAt; self.tags = tags; self.metadata = metadata
+    }
+}
+
+/// A continuous-coordinate range filter over a memory's stored `metadata`
+/// coordinate (keys `x`/`y`/`z`, in that order, as many as present). Keeps only
+/// memories whose coordinate is within `radius` (Euclidean) of `center` — the
+/// continuous-coordinate upgrade of a categorical `node:<id>` tag match.
+/// A memory with no coordinate is excluded when a spatial filter is active.
+public struct SpatialFilter: Sendable {
+    public let center: [Double]
+    public let radius: Double
+    public init(center: [Double], radius: Double) {
+        self.center = center; self.radius = radius
     }
 }
 
@@ -50,8 +69,9 @@ public struct RecallFilters: Sendable {
     public let source: String?
     public let conversationID: String?
     public let tags: [String]
-    public init(from: Date? = nil, to: Date? = nil, source: String? = nil, conversationID: String? = nil, tags: [String] = []) {
-        self.from = from; self.to = to; self.source = source; self.conversationID = conversationID; self.tags = tags
+    public let spatial: SpatialFilter?
+    public init(from: Date? = nil, to: Date? = nil, source: String? = nil, conversationID: String? = nil, tags: [String] = [], spatial: SpatialFilter? = nil) {
+        self.from = from; self.to = to; self.source = source; self.conversationID = conversationID; self.tags = tags; self.spatial = spatial
     }
 }
 
@@ -67,6 +87,16 @@ public struct RecallHit: Sendable, Codable {
     public let recencyScore: Float
     public let combinedScore: Float
     public let tags: [String]
+    /// Continuous numeric metadata stored with the memory (e.g. the 3D-workspace
+    /// coordinate under keys `x`/`y`/`z`). `nil` when none was stored. Round-trips
+    /// via `metadataJSON`; an absent JSON key decodes to `nil`.
+    public let metadata: [String: Double]?
+    public init(id: UUID, text: String, createdAt: Date, occurredAt: Date?, source: String?, conversationID: String?, language: String?, semanticScore: Float, recencyScore: Float, combinedScore: Float, tags: [String], metadata: [String: Double]? = nil) {
+        self.id = id; self.text = text; self.createdAt = createdAt; self.occurredAt = occurredAt
+        self.source = source; self.conversationID = conversationID; self.language = language
+        self.semanticScore = semanticScore; self.recencyScore = recencyScore; self.combinedScore = combinedScore
+        self.tags = tags; self.metadata = metadata
+    }
 }
 
 public struct RecallSeed: Sendable {
