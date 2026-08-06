@@ -59,15 +59,21 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log")
             ]
         ),
-        // CommandLineTools-only setups (no Xcode) lack XCTest/Testing modules,
-        // so regression checks live in a tiny executable that exits non-zero
-        // on failure. Run via: `swift run claude-mind-regression`.
+        // Keep the standalone runner for direct diagnostics. The XCTest target
+        // below executes it so the standard `swift test` entry point cannot
+        // report an empty suite. Swift 6 may also print a separate Swift
+        // Testing zero-suite footer; the XCTest result remains authoritative.
         .executableTarget(
             name: "ClaudeMindRegressionTest",
             dependencies: [
                 "ClaudeMindCore",
                 .product(name: "Logging", package: "swift-log")
             ]
+        ),
+        .testTarget(
+            name: "ClaudeMindRegressionTests",
+            dependencies: ["ClaudeMindRegressionTest"],
+            resources: [.copy("Fixtures")]
         )
     ]
 )
